@@ -9,7 +9,7 @@ description riscv ;
 
 int main()
 {
-    freopen("sample.data","r",stdin) ;
+    freopen("array_test2.data","r",stdin) ;
 //    freopen("my_output.txt","w",stdout) ;
     riscv.LoadMemory() ;
     while(true){

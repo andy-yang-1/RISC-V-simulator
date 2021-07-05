@@ -379,7 +379,7 @@ public:
             case 0b0010111 :  // auipc
             case 0b1101111 :  // jal
             case 0b1100111 :  // jalr
-            case 0b1100011 : return ; // todo 跳转相关，在 mem 阶段或 ex->synchronize 阶段跳转
+            case 0b1100011 : return ; // 跳转相关，在 mem 阶段或 ex->synchronize 阶段跳转
             case 0b0000011 :
                 switch (MEM_ans.func3) {
                     case 0b000: MEM_ans.LMD = char_extend_sign(my_memory.read_short(MEM_ans.ALUOutput)) ; return ; // lb
@@ -409,7 +409,7 @@ public:
 #endif
 
 #ifdef debug
-        if ( MEM_WB_layer.npc == 4172 ){
+        if ( MEM_WB_layer.npc == 4188 ){
             std::cerr << "debug" << endl ;
         }
 #endif
@@ -431,12 +431,11 @@ public:
 #endif
     }
 
-    // todo synchronize 时 branch_predict
+    // todo synchronize 时 branch_predict deal_data_hazard 时 forward
 
     void branch_predict(){ // 主要是去改 pc
         if ( ID_ans.status == Empty ) return ;
-        if ( ID_ans.code_type != J && ID_ans.code_type != B && ID_ans.opcode != 0b1100111 ) return ; // todo 未判断 jalr
-        // todo
+        if ( ID_ans.code_type != J && ID_ans.code_type != B && ID_ans.opcode != 0b1100111 ) return ;
         if ( ID_ans.opcode == 0b1100111 ){
             pc = ( ID_ans.reg_rs1 + ID_ans.immediate ) & ~1 ;
             IF_ans.clear() ;
@@ -484,11 +483,59 @@ public:
 
     void deal_data_hazard(){
         if ( ID_ans.status != Empty && ( ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ) || ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ) || ( MEM_WB_layer.status != Empty && ( ID_ans.rs1 == MEM_WB_layer.rd || ID_ans.rs2 == MEM_WB_layer.rd ) && MEM_WB_layer.rd != 0 ) ) ){ // WB hazard 需要处理
-#ifdef pipeline_show
-            std::cerr << "data hazard -> ID rs1: " << ID_ans.rs1 << " ID rs2: " << ID_ans.rs2 << " EX rd: " << EX_ans.rd << " MEM rd: " << MEM_ans.rd << " WB rd: " << MEM_WB_layer.rd << endl ;
+//#ifdef pipeline_show
+//            std::cerr << "data hazard -> ID rs1: " << ID_ans.rs1 << " ID rs2: " << ID_ans.rs2 << " EX rd: " << EX_ans.rd << " MEM rd: " << MEM_ans.rd << " WB rd: " << MEM_WB_layer.rd << endl ;
+//#endif
+#ifdef debug
+            if ( ID_ans.npc == 4188 ){
+                std::cerr << "check" << endl ;
+            }
 #endif
-            ID_ans.clear() ; // 避免写入夹层
-            IF_ans.status = Invalid ; // 不清空 IF_ans
+            if ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.opcode == 0b0000011 ){ // ex -> load memory
+                ID_ans.clear() ;
+                IF_ans.status = Invalid ;
+                return ;
+            }
+            ID_ans.reg_rs1 = reg[ID_ans.rs1] ;
+            ID_ans.reg_rs2 = reg[ID_ans.rs2] ; // WB
+            if ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ){
+                if ( MEM_ans.opcode == 0b0000011 ){ // mem -> load memory
+                    ID_ans.reg_rs1 = ID_ans.rs1 == MEM_ans.rd ? MEM_ans.LMD : ID_ans.reg_rs1 ;
+                    ID_ans.reg_rs2 = ID_ans.rs2 == MEM_ans.rd ? MEM_ans.LMD : ID_ans.reg_rs2 ;
+                }else{ // mem -> deal register
+                    ID_ans.reg_rs1 = ID_ans.rs1 == MEM_ans.rd ? MEM_ans.ALUOutput : ID_ans.reg_rs1 ;
+                    ID_ans.reg_rs2 = ID_ans.rs2 == MEM_ans.rd ? MEM_ans.ALUOutput : ID_ans.reg_rs2 ;
+                }
+            }
+            if ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ){
+                ID_ans.reg_rs1 = ID_ans.rs1 == EX_ans.rd ? EX_ans.ALUOutput : ID_ans.reg_rs1 ;
+                ID_ans.reg_rs2 = ID_ans.rs2 == EX_ans.rd ? EX_ans.ALUOutput : ID_ans.reg_rs2 ;
+            }
+
+//            if ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ){
+//                // todo 存在 mem_read 直接 bubble 到后排
+//                if ( EX_ans.opcode == 0b0000011 ){ // 等到 MEM 访问内存 非 S 而是 0b0000011
+//                    ID_ans.clear() ;
+//                    IF_ans.status = Invalid ;
+//                    return ;
+//                }else{ // ex 修改 // todo 有可能修改 rs1 同时 mem 修改 rs2
+//                    ID_ans.reg_rs1 = ID_ans.rs1 != EX_ans.rd ? ID_ans.reg_rs1 : EX_ans.ALUOutput ;
+//                    ID_ans.reg_rs2 = ID_ans.rs2 != EX_ans.rd ? ID_ans.reg_rs2 : EX_ans.ALUOutput ;
+//                }
+//            }
+//            if ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ){
+//                if ( MEM_ans.opcode == 0b0000011 ){
+//                    ID_ans.reg_rs1 = ID_ans.rs1 != MEM_ans.rd ? ID_ans.reg_rs1 : MEM_ans.LMD ;
+//                    ID_ans.reg_rs2 = ID_ans.rs2 != MEM_ans.rd ? ID_ans.reg_rs2 : MEM_ans.LMD ;
+//                }else{
+//                    ID_ans.reg_rs1 = ID_ans.rs1 != MEM_ans.rd ? ID_ans.reg_rs1 : MEM_ans.ALUOutput ;
+//                    ID_ans.reg_rs2 = ID_ans.rs2 != MEM_ans.rd ? ID_ans.reg_rs2 : MEM_ans.ALUOutput ;
+//                }
+//            }
+            // todo WB 结果直接读取寄存器 已提前
+
+//            ID_ans.clear() ; // 避免写入夹层
+//            IF_ans.status = Invalid ; // 不清空 IF_ans
         }
     }
 
