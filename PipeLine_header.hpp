@@ -11,8 +11,6 @@
 //#define debug_run
 //#define debug
 
-// todo pipeline_show 下其指向起始位置
-
 using std::cin ;
 using std::cout ;
 using std::endl ;
@@ -88,6 +86,28 @@ struct Layer{
     }
 };
 
+struct predictor{
+    bool first = false , second = false ; // 看 first: false -> invalid true -> valid  先改 second 再改 first
+    bool JumpIsValid() const{ return first ; }
+    void JumpSucceed( bool jumpsuccess ){
+        if ( jumpsuccess ){
+            if ( first ){ // true false / true true
+                second = true ;
+            }else if ( second ){ // false true
+                first = true ;
+                second = false ;
+            }else{ second = true ; } // false false
+        } else {
+            if ( !first ){ // false true / false false
+                second = false ;
+            } else if ( !second ){ // true false
+                first = false ;
+                second = true ;
+            }else{ second = false ; } // true true
+        }
+    }
+};
+
 class description
 {
 private:
@@ -101,6 +121,8 @@ private:
     Layer IF_ans , ID_ans , EX_ans , MEM_ans ;
 
     bool stall ;
+
+    predictor predictor_map[4097] ;
 
 public:
 
@@ -256,6 +278,9 @@ public:
 
     void PRINT_ANS(){
         cout << (unsigned int) ( reg[10] & 255u ) << endl ;
+#ifdef pipeline_show
+        cout << t_clock << endl ;
+#endif
         exit(0) ;
     }
 
@@ -287,20 +312,9 @@ public:
                     case 0b110: if ( EX_ans.reg_rs1 < unsigned ( EX_ans.reg_rs2 ) ) EX_ans.npc += EX_ans.immediate - 4 ; return ; // bltu
                     case 0b111: if ( EX_ans.reg_rs1 >= unsigned ( EX_ans.reg_rs2 )) EX_ans.npc += EX_ans.immediate - 4 ; return ; // bgeu
                 }
-            case 0b0000011 :
-                switch (EX_ans.func3) { // LOAD memory 相关
-                    case 0b000: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // lb
-                    case 0b001: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // lh
-                    case 0b010: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // lw
-                    case 0b100: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // lbu
-                    case 0b101: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // lhu
-                }
-            case 0b0100011 :
-                switch (EX_ans.func3) { // STORE memory 相关
-                    case 0b000: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // sb
-                    case 0b001: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // sh
-                    case 0b010: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ;  return ; // sw
-                }
+            case 0b0000011 : // LOAD 相关
+            case 0b0100011 : EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ;
+
             case 0b0010011 :
                 switch (EX_ans.func3) { // LOAD register 相关
                     case 0b000: EX_ans.ALUOutput = EX_ans.reg_rs1 + EX_ans.immediate ; return ; // addi
@@ -405,7 +419,7 @@ public:
             case 0b0010111 :  // auipc
             case 0b1101111 :  // jal
             case 0b1100111 : reg[MEM_WB_layer.rd] = MEM_WB_layer.ALUOutput ; break ; // jalr
-            case 0b1100011 : break ; // todo 跳转相关，在 mem 阶段或 ex->synchronize 阶段跳转
+            case 0b1100011 : break ;
             case 0b0000011 : reg[MEM_WB_layer.rd] = MEM_WB_layer.LMD ; break ;
             case 0b0100011 : break ;
             case 0b0010011 :
@@ -417,30 +431,78 @@ public:
 #endif
     }
 
-    void synchronize(){ // status 自动
-        // time hazard
-        t_clock++ ;
-        if ( pc != EX_ans.npc + 8 && EX_ans.status != Empty ){
-#ifdef pipeline_show
-            std::cerr << "time hazard -> old pc: " << pc << " real pc: " << EX_ans.npc << endl ;
-#endif
-            pc = EX_ans.npc ;
+    // todo synchronize 时 branch_predict
+
+    void branch_predict(){ // 主要是去改 pc
+        if ( ID_ans.status == Empty ) return ;
+        if ( ID_ans.code_type != J && ID_ans.code_type != B && ID_ans.opcode != 0b1100111 ) return ; // todo 未判断 jalr
+        // todo
+        if ( ID_ans.opcode == 0b1100111 ){
+            pc = ( ID_ans.reg_rs1 + ID_ans.immediate ) & ~1 ;
             IF_ans.clear() ;
-            ID_ans.clear() ;
-            IF_ID_layer.clear() ;
         }
-        // data hazard
-        if ( ID_ans.status != Empty && ( ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ) || ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ) || ( MEM_WB_layer.status != Empty && ( ID_ans.rs1 == MEM_WB_layer.rd || ID_ans.rs2 == MEM_WB_layer.rd ) && MEM_WB_layer.rd != 0 ) ) ){ // todo WB hazard 忘记处理了
+        if ( ID_ans.code_type == J ){
+            pc = ID_ans.npc - 4 + ID_ans.immediate ;
+            IF_ans.clear() ;
+        }else{
+            if ( predictor_map[ID_ans.debug_read%4096].first ){
+                pc = ID_ans.npc - 4 + ID_ans.immediate ;
+                IF_ans.clear() ;
+            }
+        }
+    }
+
+    void deal_time_hazard(){
+//        if ( pc != EX_ans.npc + 8 && EX_ans.status != Empty ){ // todo 判 time hazard 方式需要改变 不可以用 pc 判 hazard 而是去特定模块 (fetch) 判 hazard
+//#ifdef pipeline_show
+//            std::cerr << "time hazard -> old pc: " << pc << " real pc: " << EX_ans.npc << endl ;
+//#endif
+//            pc = EX_ans.npc ;
+//            IF_ans.clear() ;
+//            ID_ans.clear() ;
+//            IF_ID_layer.clear() ;
+//        }
+        if ( EX_ans.status != Empty && ( EX_ans.code_type == J || EX_ans.code_type == B || EX_ans.opcode == 0b1100111 ) ){
+            if ( EX_ans.code_type == B ){
+                if ( EX_ans.debug_read + 4 == EX_ans.npc ) predictor_map[EX_ans.debug_read%4096].JumpSucceed(false) ;
+                else predictor_map[EX_ans.debug_read%4096].JumpSucceed(true) ;
+            }
+            if ( ID_ans.status != Empty && ID_ans.npc != EX_ans.npc + 4 ){
+                pc = EX_ans.npc ;
+                IF_ans.clear() ;
+                ID_ans.clear() ;
+                IF_ID_layer.clear() ;
+                return ;
+            }
+            if ( ID_ans.status == Empty && IF_ans.status != Empty && IF_ans.npc != EX_ans.npc + 4 ){
+                pc = EX_ans.npc ;
+                IF_ans.clear() ;
+                return ;
+            }
+        }
+    }
+
+    void deal_data_hazard(){
+        if ( ID_ans.status != Empty && ( ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ) || ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ) || ( MEM_WB_layer.status != Empty && ( ID_ans.rs1 == MEM_WB_layer.rd || ID_ans.rs2 == MEM_WB_layer.rd ) && MEM_WB_layer.rd != 0 ) ) ){ // WB hazard 需要处理
 #ifdef pipeline_show
             std::cerr << "data hazard -> ID rs1: " << ID_ans.rs1 << " ID rs2: " << ID_ans.rs2 << " EX rd: " << EX_ans.rd << " MEM rd: " << MEM_ans.rd << " WB rd: " << MEM_WB_layer.rd << endl ;
 #endif
             ID_ans.clear() ; // 避免写入夹层
             IF_ans.status = Invalid ; // 不清空 IF_ans
         }
+    }
+
+    void synchronize(){ // status 自动
+        t_clock++ ;
+        // time hazard
+        deal_time_hazard() ;
+        // data hazard
+        deal_data_hazard() ;
+        branch_predict() ;
         MEM_WB_layer = MEM_ans ;
         EX_MEM_layer = EX_ans ;
         ID_EX_layer = ID_ans ;
-        IF_ID_layer = IF_ans ; // todo 不能动 IF_ID_layer
+        IF_ID_layer = IF_ans ; // 不能动 IF_ID_layer
         IF_ans.clear() ;
         ID_ans.clear() ;
         EX_ans.clear() ;
