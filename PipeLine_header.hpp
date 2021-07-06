@@ -43,7 +43,7 @@ struct Memory{
     }
 };
 
-enum Layer_status{ Empty , Full , Invalid }; // invalid -> clear -> Full
+enum Layer_status{ Empty , Full , Invalid , Err_msg }; // invalid -> clear -> Full Err_msg -> clear -> Empty
 
 struct Layer{
     Layer_status status = Empty ;
@@ -54,7 +54,7 @@ struct Layer{
 
     Layer &operator= ( const Layer &other ) { // 层间信息传递
         if ( this == &other ) return *this ;
-        if ( other.status == Invalid ){
+        if ( other.status == Invalid || other.status == Err_msg ){
             return *this ;
         }
         status = other.status ;
@@ -121,7 +121,7 @@ private:
     Layer IF_ID_layer , ID_EX_layer , EX_MEM_layer , MEM_WB_layer ;
     Layer IF_ans , ID_ans , EX_ans , MEM_ans ;
 
-    bool stall ;
+    int stall = 0 ;
 
     predictor predictor_map[4097] ;
     int prediction_sum = 0 , right_prediction_sum = 0 ;
@@ -231,7 +231,7 @@ public:
             return ;
         }
 #ifdef debug
-        if ( pc == 4168 ){
+        if ( pc == 4360 ){
             std::cerr << "debug" << endl ;
         }
 #endif
@@ -385,7 +385,7 @@ public:
             case 0b1101111 :  // jal
             case 0b1100111 :  // jalr
             case 0b1100011 : return ; // 跳转相关，在 mem 阶段或 ex->synchronize 阶段跳转
-            case 0b0000011 :
+            case 0b0000011 : MEM_stall() ;
                 switch (MEM_ans.func3) {
                     case 0b000: MEM_ans.LMD = char_extend_sign(my_memory.read_short(MEM_ans.ALUOutput)) ; return ; // lb
                     case 0b001: MEM_ans.LMD = short_extend_sign(my_memory.read_ushort(MEM_ans.ALUOutput)) ; return ; // lh
@@ -393,7 +393,7 @@ public:
                     case 0b100: MEM_ans.LMD = my_memory.read_short(MEM_ans.ALUOutput) ; return ; // lbu
                     case 0b101: MEM_ans.LMD = my_memory.read_ushort(MEM_ans.ALUOutput) ; return ; // lhu
                 }
-            case 0b0100011 :
+            case 0b0100011 : MEM_stall() ;
                 switch (MEM_ans.func3) {
                     case 0b000: my_memory.write_short(MEM_ans.ALUOutput,MEM_ans.reg_rs2) ; return ; // sb
                     case 0b001: my_memory.write_ushort(MEM_ans.ALUOutput,MEM_ans.reg_rs2) ; return ; // sh
@@ -414,7 +414,7 @@ public:
 #endif
 
 #ifdef debug
-        if ( MEM_WB_layer.npc == 4188 ){
+        if ( MEM_WB_layer.npc == 4360 ){
             std::cerr << "debug" << endl ;
         }
 #endif
@@ -433,12 +433,16 @@ public:
         reg[0] = 0 ; // 归零
 #ifdef debug_run
         debug_show() ;
+        if ( t_clock == 262 ){
+            std::cerr << "check" << endl ;
+        }
 #endif
     }
 
     // todo synchronize 时 branch_predict deal_data_hazard 时 forward
 
     void branch_predict(){ // 主要是去改 pc
+        if ( stall > 0 ) return ;
         if ( ID_ans.status == Empty ) return ;
         if ( ID_ans.code_type != J && ID_ans.code_type != B && ID_ans.opcode != 0b1100111 ) return ;
         if ( ID_ans.opcode == 0b1100111 ){
@@ -459,6 +463,7 @@ public:
     }
 
     void deal_time_hazard(){ // todo pipeline_show time hazard
+        if ( stall > 0 ) return ;
         if ( EX_ans.status != Empty && ( EX_ans.code_type == J || EX_ans.code_type == B || EX_ans.opcode == 0b1100111 ) ){
             if ( EX_ans.code_type == B ){
                 if ( EX_ans.debug_read + 4 == EX_ans.npc ) predictor_map[EX_ans.debug_read%4096].JumpSucceed(false) ;
@@ -481,6 +486,7 @@ public:
     }
 
     void deal_data_hazard(){ // todo pipeline_show data hazard
+        if ( stall > 0 ) return ;
         if ( ID_ans.status != Empty && ( ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ) || ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ) || ( MEM_WB_layer.status != Empty && ( ID_ans.rs1 == MEM_WB_layer.rd || ID_ans.rs2 == MEM_WB_layer.rd ) && MEM_WB_layer.rd != 0 ) ) ){ // WB hazard 需要处理
 #ifdef debug
             if ( ID_ans.npc == 4188 ){
@@ -510,8 +516,25 @@ public:
         }
     }
 
+    void MEM_stall(){ // 给 MEM 调整
+        if ( stall == 0 ){
+            stall = 2 ;
+            return ;
+        }
+        stall-- ;
+    }
+
     void synchronize(){ // status 自动
         t_clock++ ;
+//        if ( t_clock == 400 ){
+//            std::cerr << "check" << endl ;
+//        }
+        if ( stall > 0 ){
+            MEM_ans.clear() ;
+            EX_ans.status = Invalid ;
+            ID_ans.status = Err_msg ;
+            IF_ans.status = Invalid ;
+        }
         // time hazard
         deal_time_hazard() ;
         // data hazard
