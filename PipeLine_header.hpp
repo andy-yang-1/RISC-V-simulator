@@ -8,6 +8,7 @@
 #include <iostream>
 
 //#define pipeline_show
+//#define efficiency_show
 //#define debug_run
 //#define debug
 
@@ -123,6 +124,7 @@ private:
     bool stall ;
 
     predictor predictor_map[4097] ;
+    int prediction_sum = 0 , right_prediction_sum = 0 ;
 
 public:
 
@@ -278,8 +280,9 @@ public:
 
     void PRINT_ANS(){
         cout << (unsigned int) ( reg[10] & 255u ) << endl ;
-#ifdef pipeline_show
-        cout << t_clock << endl ;
+#ifdef efficiency_show
+        cout << "cycle: " << t_clock << endl ;
+        cout << "right prediction rate: " << ((double )right_prediction_sum) / prediction_sum * 100 << "%" << endl ;
 #endif
         exit(0) ;
     }
@@ -360,6 +363,8 @@ public:
                 }
         }
     }
+
+    // todo 访问内存直接停三个周期
 
     void MEM(){
         if ( EX_MEM_layer.status == Empty ) {
@@ -444,6 +449,8 @@ public:
             pc = ID_ans.npc - 4 + ID_ans.immediate ;
             IF_ans.clear() ;
         }else{
+            prediction_sum++ ;
+            right_prediction_sum++ ;
             if ( predictor_map[ID_ans.debug_read%4096].first ){
                 pc = ID_ans.npc - 4 + ID_ans.immediate ;
                 IF_ans.clear() ;
@@ -451,22 +458,14 @@ public:
         }
     }
 
-    void deal_time_hazard(){
-//        if ( pc != EX_ans.npc + 8 && EX_ans.status != Empty ){ // todo 判 time hazard 方式需要改变 不可以用 pc 判 hazard 而是去特定模块 (fetch) 判 hazard
-//#ifdef pipeline_show
-//            std::cerr << "time hazard -> old pc: " << pc << " real pc: " << EX_ans.npc << endl ;
-//#endif
-//            pc = EX_ans.npc ;
-//            IF_ans.clear() ;
-//            ID_ans.clear() ;
-//            IF_ID_layer.clear() ;
-//        }
+    void deal_time_hazard(){ // todo pipeline_show time hazard
         if ( EX_ans.status != Empty && ( EX_ans.code_type == J || EX_ans.code_type == B || EX_ans.opcode == 0b1100111 ) ){
             if ( EX_ans.code_type == B ){
                 if ( EX_ans.debug_read + 4 == EX_ans.npc ) predictor_map[EX_ans.debug_read%4096].JumpSucceed(false) ;
                 else predictor_map[EX_ans.debug_read%4096].JumpSucceed(true) ;
             }
             if ( ID_ans.status != Empty && ID_ans.npc != EX_ans.npc + 4 ){
+                right_prediction_sum-- ;
                 pc = EX_ans.npc ;
                 IF_ans.clear() ;
                 ID_ans.clear() ;
@@ -481,11 +480,8 @@ public:
         }
     }
 
-    void deal_data_hazard(){
+    void deal_data_hazard(){ // todo pipeline_show data hazard
         if ( ID_ans.status != Empty && ( ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ) || ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ) || ( MEM_WB_layer.status != Empty && ( ID_ans.rs1 == MEM_WB_layer.rd || ID_ans.rs2 == MEM_WB_layer.rd ) && MEM_WB_layer.rd != 0 ) ) ){ // WB hazard 需要处理
-//#ifdef pipeline_show
-//            std::cerr << "data hazard -> ID rs1: " << ID_ans.rs1 << " ID rs2: " << ID_ans.rs2 << " EX rd: " << EX_ans.rd << " MEM rd: " << MEM_ans.rd << " WB rd: " << MEM_WB_layer.rd << endl ;
-//#endif
 #ifdef debug
             if ( ID_ans.npc == 4188 ){
                 std::cerr << "check" << endl ;
@@ -511,31 +507,6 @@ public:
                 ID_ans.reg_rs1 = ID_ans.rs1 == EX_ans.rd ? EX_ans.ALUOutput : ID_ans.reg_rs1 ;
                 ID_ans.reg_rs2 = ID_ans.rs2 == EX_ans.rd ? EX_ans.ALUOutput : ID_ans.reg_rs2 ;
             }
-
-//            if ( EX_ans.status != Empty && ( ID_ans.rs1 == EX_ans.rd || ID_ans.rs2 == EX_ans.rd ) && EX_ans.rd != 0 ){
-//                // todo 存在 mem_read 直接 bubble 到后排
-//                if ( EX_ans.opcode == 0b0000011 ){ // 等到 MEM 访问内存 非 S 而是 0b0000011
-//                    ID_ans.clear() ;
-//                    IF_ans.status = Invalid ;
-//                    return ;
-//                }else{ // ex 修改 // todo 有可能修改 rs1 同时 mem 修改 rs2
-//                    ID_ans.reg_rs1 = ID_ans.rs1 != EX_ans.rd ? ID_ans.reg_rs1 : EX_ans.ALUOutput ;
-//                    ID_ans.reg_rs2 = ID_ans.rs2 != EX_ans.rd ? ID_ans.reg_rs2 : EX_ans.ALUOutput ;
-//                }
-//            }
-//            if ( MEM_ans.status != Empty && ( ID_ans.rs1 == MEM_ans.rd || ID_ans.rs2 == MEM_ans.rd ) && MEM_ans.rd != 0 ){
-//                if ( MEM_ans.opcode == 0b0000011 ){
-//                    ID_ans.reg_rs1 = ID_ans.rs1 != MEM_ans.rd ? ID_ans.reg_rs1 : MEM_ans.LMD ;
-//                    ID_ans.reg_rs2 = ID_ans.rs2 != MEM_ans.rd ? ID_ans.reg_rs2 : MEM_ans.LMD ;
-//                }else{
-//                    ID_ans.reg_rs1 = ID_ans.rs1 != MEM_ans.rd ? ID_ans.reg_rs1 : MEM_ans.ALUOutput ;
-//                    ID_ans.reg_rs2 = ID_ans.rs2 != MEM_ans.rd ? ID_ans.reg_rs2 : MEM_ans.ALUOutput ;
-//                }
-//            }
-            // todo WB 结果直接读取寄存器 已提前
-
-//            ID_ans.clear() ; // 避免写入夹层
-//            IF_ans.status = Invalid ; // 不清空 IF_ans
         }
     }
 
